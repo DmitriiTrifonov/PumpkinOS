@@ -37,10 +37,22 @@ typedef struct {
   uint8_t *shm_data;
 } buffer_t;
 
+#define MAX_EVENTS 64
+
+// used when no size is given and the compositor does not propose one
+#define DEFAULT_WIDTH  1024
+#define DEFAULT_HEIGHT 768
+
+typedef struct {
+  int type, arg1, arg2;
+} window_event_t;
+
 typedef struct {
   int width, height, spixel, margin, inside;
-  int old_x, old_y, x, y, old_buttons, buttons, mods, other;
-  uint32_t old_key, key;
+  int x, y, buttons;
+  uint32_t key;
+  window_event_t events[MAX_EVENTS];
+  int first_event, num_events;
   uint32_t modifiers;
   int64_t shift_up;
   struct wl_display *display;
@@ -59,6 +71,10 @@ typedef struct {
   struct xkb_context *xkb_context;
   struct xkb_compose_state *compose_state;
   struct wl_keyboard *keyboard;
+  struct wl_touch *touch;
+  int32_t touch_id;
+  int touch_active;
+  int config_width, config_height;
   struct zxdg_decoration_manager_v1 *decoration_manager;
   struct zxdg_toplevel_decoration_v1 *decoration;
   struct xdg_toplevel_icon_manager_v1 *icon_manager;
@@ -77,7 +93,47 @@ typedef struct {
 static window_provider_t window_provider;
 
 static void noop() {
-} 
+}
+
+// Wayland handlers queue events, so a press and release that arrive in the
+// same dispatch (a quick tap) are not lost. Consecutive motions are merged.
+static void push_event(libwwayland_window_t *window, int type, int arg1, int arg2) {
+  window_event_t *last;
+  int i;
+
+  if (type == WINDOW_MOTION && window->num_events > 0) {
+    last = &window->events[(window->first_event + window->num_events - 1) % MAX_EVENTS];
+    if (last->type == WINDOW_MOTION) {
+      last->arg1 = arg1;
+      last->arg2 = arg2;
+      return;
+    }
+  }
+
+  if (window->num_events == MAX_EVENTS) {
+    debug(DEBUG_ERROR, "WAYLAND", "event queue full");
+    return;
+  }
+
+  i = (window->first_event + window->num_events) % MAX_EVENTS;
+  window->events[i].type = type;
+  window->events[i].arg1 = arg1;
+  window->events[i].arg2 = arg2;
+  window->num_events++;
+}
+
+static int pop_event(libwwayland_window_t *window, int *arg1, int *arg2) {
+  window_event_t *ev;
+
+  if (window->num_events == 0) return 0;
+  ev = &window->events[window->first_event];
+  window->first_event = (window->first_event + 1) % MAX_EVENTS;
+  window->num_events--;
+  *arg1 = ev->arg1;
+  *arg2 = ev->arg2;
+
+  return ev->type;
+}
 
 static int map_button(uint32_t button) {
   switch (button) {
@@ -88,18 +144,24 @@ static int map_button(uint32_t button) {
   return 0;
 }
 
-static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
-  libwwayland_window_t *window = (libwwayland_window_t *)data;
+static void pointer_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   int x, y;
 
-  if (window->inside) {
-    x = wl_fixed_to_int(surface_x);
-    y = wl_fixed_to_int(surface_y);
+  x = wl_fixed_to_int(surface_x);
+  y = wl_fixed_to_int(surface_y);
 
-    if (x >= window->margin && y >= window->margin && x < window->margin + window->width && y < window->margin + window->height) {
-      window->x = x - window->margin;
-      window->y = y - window->margin;
-    }
+  if (x >= window->margin && y >= window->margin && x < window->margin + window->width && y < window->margin + window->height) {
+    window->x = x - window->margin;
+    window->y = y - window->margin;
+    push_event(window, WINDOW_MOTION, window->x, window->y);
+  }
+}
+
+static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  if (window->inside) {
+    pointer_set_position(window, surface_x, surface_y);
   }
 }
 
@@ -120,9 +182,11 @@ static void pointer_handle_button(void *data, struct wl_pointer *pointer, uint32
           }
 #endif
           window->buttons |= button;
+          push_event(window, WINDOW_BUTTONDOWN, button, 0);
           break;
         case WL_POINTER_BUTTON_STATE_RELEASED:
           window->buttons &= ~button;
+          push_event(window, WINDOW_BUTTONUP, button, 0);
           break;
       }
     }
@@ -135,6 +199,8 @@ static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer, uint
   if (surface == window->surface) {
     wl_pointer_set_cursor(wl_pointer, serial, window->cursor_surface, window->cursor_image->hotspot_x, window->cursor_image->hotspot_y);
     window->inside = 1;
+    // enter carries a position, a click may follow without any motion
+    pointer_set_position(window, surface_x, surface_y);
   }
 }
 
@@ -152,6 +218,74 @@ static const struct wl_pointer_listener pointer_listener = {
   .motion = pointer_handle_motion,
   .button = pointer_handle_button,
   .axis = noop,
+};
+
+// only the first finger is tracked, it acts as the pen (left button)
+static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+  int x, y;
+
+  x = wl_fixed_to_int(surface_x) - window->margin;
+  y = wl_fixed_to_int(surface_y) - window->margin;
+  if (x < 0) x = 0;
+  else if (x >= window->width) x = window->width - 1;
+  if (y < 0) y = 0;
+  else if (y >= window->height) y = window->height - 1;
+  window->x = x;
+  window->y = y;
+  push_event(window, WINDOW_MOTION, x, y);
+}
+
+static void touch_release(libwwayland_window_t *window) {
+  window->touch_active = 0;
+  window->buttons &= ~1;
+  push_event(window, WINDOW_BUTTONUP, 1, 0);
+}
+
+static void touch_handle_down(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  if (surface == window->surface && !window->touch_active) {
+    window->touch_active = 1;
+    window->touch_id = id;
+    // the press is handled at the last reported position, so motion goes first
+    touch_set_position(window, surface_x, surface_y);
+    window->buttons |= 1;
+    push_event(window, WINDOW_BUTTONDOWN, 1, 0);
+  }
+}
+
+static void touch_handle_up(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, int32_t id) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  if (window->touch_active && id == window->touch_id) {
+    touch_release(window);
+  }
+}
+
+static void touch_handle_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, wl_fixed_t surface_x, wl_fixed_t surface_y) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  if (window->touch_active && id == window->touch_id) {
+    touch_set_position(window, surface_x, surface_y);
+  }
+}
+
+static void touch_handle_cancel(void *data, struct wl_touch *wl_touch) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  if (window->touch_active) {
+    touch_release(window);
+  }
+}
+
+static const struct wl_touch_listener touch_listener = {
+  .down = touch_handle_down,
+  .up = touch_handle_up,
+  .motion = touch_handle_motion,
+  .frame = noop,
+  .cancel = touch_handle_cancel,
+  .shape = noop,
+  .orientation = noop,
 };
 
 static void wl_keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format, int32_t fd, uint32_t size) {
@@ -270,8 +404,10 @@ static void wl_keyboard_key(void *data, struct wl_keyboard *wl_keyboard, uint32_
     if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
       debug(DEBUG_TRACE, "WAYLAND", "key down %d", key);
       window->key = key;
-    } else {
+      push_event(window, WINDOW_KEYDOWN, key, 0);
+    } else if (window->key) {
       debug(DEBUG_TRACE, "WAYLAND", "key up %d", window->key);
+      push_event(window, WINDOW_KEYUP, window->key, 0);
       window->key = 0;
     }
   }
@@ -298,6 +434,12 @@ static void seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t 
   if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
     window->keyboard = wl_seat_get_keyboard(seat);
     wl_keyboard_add_listener(window->keyboard, &wl_keyboard_listener, window);
+  }
+
+  if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) && !window->touch) {
+    debug(DEBUG_INFO, "WAYLAND", "seat has touch capability");
+    window->touch = wl_seat_get_touch(seat);
+    wl_touch_add_listener(window->touch, &touch_listener, window);
   }
 }
 
@@ -377,8 +519,17 @@ static void xdg_toplevel_handle_close(void *data, struct xdg_toplevel *xdg_tople
   window->running = 0;
 } 
 
+static void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *xdg_toplevel, int32_t width, int32_t height, struct wl_array *states) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  // a size of 0 means the client may choose its own size
+  debug(DEBUG_INFO, "WAYLAND", "toplevel configure %dx%d", width, height);
+  window->config_width = width;
+  window->config_height = height;
+}
+
 static const struct xdg_toplevel_listener xdg_toplevel_listener = {
-  .configure = noop,
+  .configure = xdg_toplevel_handle_configure,
   .close = xdg_toplevel_handle_close,
 };
 
@@ -530,11 +681,14 @@ static char *libwwayland_clipboard(libwwayland_window_t *_window, char *clipboar
 
 static int libwwayland_event2(libwwayland_window_t *window, int wait, int *arg1, int *arg2) {
   struct pollfd pfd;
-  int poll_result, e, r = 0;
+  int poll_result, r;
 
   if (!window) return -1;
   if (!window->running) return -1;
   if (thread_must_end()) return -1;
+
+  // events queued by a previous dispatch are delivered first
+  if ((r = pop_event(window, arg1, arg2)) != 0) return r;
 
   wl_display_flush(window->display);
 
@@ -546,46 +700,12 @@ static int libwwayland_event2(libwwayland_window_t *window, int wait, int *arg1,
   if (poll_result == 0) return 0;
   if (!(pfd.revents & POLLIN)) return 0;
 
-  if ((e = wl_display_dispatch(window->display)) == -1) {
+  if (wl_display_dispatch(window->display) == -1) {
     debug(DEBUG_ERROR, "WAYLAND", "wl_display_dispatch failed");
     return -1;
   }
 
-  if (window->buttons != window->old_buttons) {
-    if (!(window->old_buttons & 1) && window->buttons & 1) {
-      *arg1 = 1;
-      r = WINDOW_BUTTONDOWN;
-    } else if (window->old_buttons & 1 && !(window->buttons & 1)) {
-      *arg1 = 1;
-      r = WINDOW_BUTTONUP;
-    } else if (!(window->old_buttons & 2) && window->buttons & 2) {
-      *arg1 = 2;
-      r = WINDOW_BUTTONDOWN;
-    } else if (window->old_buttons & 2 && !(window->buttons & 2)) {
-      *arg1 = 2;
-      r = WINDOW_BUTTONUP;
-    }
-    window->old_buttons = window->buttons;
-
-  } else if (window->x != window->old_x || window->y != window->old_y) {
-    *arg1 = window->x;
-    *arg2 = window->y;
-    window->old_x = window->x;
-    window->old_y = window->y;
-    r = WINDOW_MOTION;
-
-  } else if (window->key != window->old_key) {
-    if (window->old_key == 0 && window->key != 0) {
-      *arg1 = window->key;
-      r = WINDOW_KEYDOWN;
-    } else if (window->old_key != 0 && window->key == 0) {
-      *arg1 = window->old_key;
-      r = WINDOW_KEYUP;
-    }
-    window->old_key = window->key;
-  }
-
-  return r;
+  return pop_event(window, arg1, arg2);
 }
 
 static int libwwayland_window_show_cursor(window_t *_window, int show) {
@@ -610,6 +730,8 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
   struct wl_cursor *cursor;
   struct xkb_compose_table *compose_table;
   uint32_t spixel;
+  buffer_t *tmp = NULL;
+  int i;
   const char *locale;
 
   switch (encoding) {
@@ -671,8 +793,12 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     wl_surface_attach(window->surface, NULL, 0, 0);
     wl_surface_commit(window->surface);
 
+    if (fullscreen) {
+      window->margin = 0;
+    }
+
 #ifdef LIBDECOR
-    if (!window->decoration_manager) {
+    if (!window->decoration_manager && !fullscreen) {
       window->libdecor = libdecor_new(window->display, &libdecor_interface);
       if (window->libdecor) {
         window->margin = 0;
@@ -695,6 +821,9 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
         window->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(window->decoration_manager, window->xdg_toplevel);
         zxdg_toplevel_decoration_v1_set_mode(window->decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
       }
+      if (fullscreen) {
+        xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
+      }
 #ifdef LIBDECOR
     }
 #endif
@@ -704,6 +833,31 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
       wl_display_flush(window->display);
       wl_display_dispatch(window->display);
       if (thread_must_end()) break;
+    }
+
+    // Some compositors (sway) answer the initial commit with a 0x0 configure
+    // and send the fullscreen size only after the surface is mapped. Map it
+    // with a 1x1 buffer until the size is known.
+    if (fullscreen && window->config_width <= 0 && (tmp = create_buffer(window, 1, 1)) != NULL) {
+      wl_surface_attach(window->surface, tmp->buffer, 0, 0);
+      wl_surface_commit(window->surface);
+      for (i = 0; window->config_width <= 0 && i < 10; i++) {
+        if (wl_display_roundtrip(window->display) == -1) break;
+      }
+    }
+
+    // in fullscreen, or when no size was given, use the size proposed by the compositor
+    if (fullscreen || window->width <= 0 || window->height <= 0) {
+      if (window->config_width > 2*window->margin && window->config_height > 2*window->margin) {
+        window->width = window->config_width - 2*window->margin;
+        window->height = window->config_height - 2*window->margin;
+      } else if (window->width <= 0 || window->height <= 0) {
+        window->width = DEFAULT_WIDTH;
+        window->height = DEFAULT_HEIGHT;
+      }
+      debug(DEBUG_INFO, "WAYLAND", "using window size %dx%d", window->width, window->height);
+      *width = window->width;
+      *height = window->height;
     }
 
 #ifdef LIBDECOR
@@ -719,12 +873,14 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
 #endif
 
     if ((window->buffer = create_buffer(window, window->width + 2*window->margin, window->height + 2*window->margin)) == NULL) {
+      destroy_buffer(tmp);
       sys_free(window);
       return NULL;
     }
 
     wl_surface_attach(window->surface, window->buffer->buffer, 0, 0);
     wl_surface_commit(window->surface);
+    destroy_buffer(tmp);
 
     xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, window->width + 2*window->margin, window->height + 2*window->margin);
     wl_surface_commit(window->surface);
