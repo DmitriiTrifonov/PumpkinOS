@@ -75,6 +75,8 @@ typedef struct {
   int32_t touch_id;
   int touch_active;
   int config_width, config_height;
+  int scale;
+  uint32_t compositor_version;
   struct zxdg_decoration_manager_v1 *decoration_manager;
   struct zxdg_toplevel_decoration_v1 *decoration;
   struct xdg_toplevel_icon_manager_v1 *icon_manager;
@@ -147,8 +149,9 @@ static int map_button(uint32_t button) {
 static void pointer_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   int x, y;
 
-  x = wl_fixed_to_int(surface_x);
-  y = wl_fixed_to_int(surface_y);
+  // surface coordinates are logical, the buffer has scale pixels per unit
+  x = (int)(wl_fixed_to_double(surface_x) * window->scale);
+  y = (int)(wl_fixed_to_double(surface_y) * window->scale);
 
   if (x >= window->margin && y >= window->margin && x < window->margin + window->width && y < window->margin + window->height) {
     window->x = x - window->margin;
@@ -224,8 +227,8 @@ static const struct wl_pointer_listener pointer_listener = {
 static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   int x, y;
 
-  x = wl_fixed_to_int(surface_x) - window->margin;
-  y = wl_fixed_to_int(surface_y) - window->margin;
+  x = (int)(wl_fixed_to_double(surface_x) * window->scale) - window->margin;
+  y = (int)(wl_fixed_to_double(surface_y) * window->scale) - window->margin;
   if (x < 0) x = 0;
   else if (x >= window->width) x = window->width - 1;
   if (y < 0) y = 0;
@@ -471,7 +474,9 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
 
   } else if (sys_strcmp(interface, wl_compositor_interface.name) == 0) {
     debug(DEBUG_INFO, "WAYLAND", "binding compositor interface");
-    window->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
+    // version 3 for wl_surface_set_buffer_scale, 4 for wl_surface_damage_buffer
+    window->compositor_version = version < 4 ? version : 4;
+    window->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, window->compositor_version);
 
   } else if (sys_strcmp(interface, xdg_wm_base_interface.name) == 0) {
     debug(DEBUG_INFO, "WAYLAND", "binding xdg wm base interface");
@@ -731,6 +736,7 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
   struct xkb_compose_table *compose_table;
   uint32_t spixel;
   buffer_t *tmp = NULL;
+  char *s;
   int i;
   const char *locale;
 
@@ -755,6 +761,7 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     window->spixel = spixel;
     window->running = 1;
     window->margin = 4;
+    window->scale = 1;
 
     registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registry_listener, window);
@@ -795,6 +802,16 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
 
     if (fullscreen) {
       window->margin = 0;
+    }
+
+    // PUMPKIN_WAYLAND_SCALE=n makes the PumpkinOS screen n times the logical
+    // size of the window, the compositor scales it down. Useful on phones,
+    // where the logical size is small because of a large output scale.
+    if (fullscreen && (s = sys_getenv("PUMPKIN_WAYLAND_SCALE")) != NULL && window->compositor_version >= 3) {
+      window->scale = sys_atoi(s);
+      if (window->scale < 1) window->scale = 1;
+      if (window->scale > 4) window->scale = 4;
+      debug(DEBUG_INFO, "WAYLAND", "buffer scale %d", window->scale);
     }
 
 #ifdef LIBDECOR
@@ -849,8 +866,8 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     // in fullscreen, or when no size was given, use the size proposed by the compositor
     if (fullscreen || window->width <= 0 || window->height <= 0) {
       if (window->config_width > 2*window->margin && window->config_height > 2*window->margin) {
-        window->width = window->config_width - 2*window->margin;
-        window->height = window->config_height - 2*window->margin;
+        window->width = window->config_width * window->scale - 2*window->margin;
+        window->height = window->config_height * window->scale - 2*window->margin;
       } else if (window->width <= 0 || window->height <= 0) {
         window->width = DEFAULT_WIDTH;
         window->height = DEFAULT_HEIGHT;
@@ -878,11 +895,14 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
       return NULL;
     }
 
+    if (window->scale > 1) {
+      wl_surface_set_buffer_scale(window->surface, window->scale);
+    }
     wl_surface_attach(window->surface, window->buffer->buffer, 0, 0);
     wl_surface_commit(window->surface);
     destroy_buffer(tmp);
 
-    xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, window->width + 2*window->margin, window->height + 2*window->margin);
+    xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, (window->width + 2*window->margin) / window->scale, (window->height + 2*window->margin) / window->scale);
     wl_surface_commit(window->surface);
   }
 
@@ -1025,7 +1045,11 @@ static int libwwayland_window_draw_texture_rect(window_t *_window, texture_t *te
         d += dpitch;
       }
       wl_surface_attach(window->surface, window->buffer->buffer, 0, 0);
-      wl_surface_damage(window->surface, x, y, w, h);
+      if (window->compositor_version >= 4) {
+        wl_surface_damage_buffer(window->surface, x, y, w, h);
+      } else {
+        wl_surface_damage(window->surface, x / window->scale, y / window->scale, (w + window->scale - 1) / window->scale + 1, (h + window->scale - 1) / window->scale + 1);
+      }
       wl_surface_commit(window->surface);
       r = 0;
     } else {
