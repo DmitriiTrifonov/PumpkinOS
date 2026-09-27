@@ -59,12 +59,19 @@ int main(int argc, char *argv[]) {
 
   for (i = 3; i < argc; i++) {
     if (sscanf(argv[i], "%d,%d", &x, &y) != 2) continue;
+    // two moves, so the client gets a motion event besides the enter event
+    zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x + 1, y, width, height);
+    zwlr_virtual_pointer_v1_frame(pointer);
+    wl_display_roundtrip(display);
     zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x, y, width, height);
     zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_roundtrip(display);
     usleep(200000);
     zwlr_virtual_pointer_v1_button(pointer, t++, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
     zwlr_virtual_pointer_v1_frame(pointer);
+    // like a real tap, the release comes a little later
+    wl_display_roundtrip(display);
+    usleep(100000);
     zwlr_virtual_pointer_v1_button(pointer, t++, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
     zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_roundtrip(display);
