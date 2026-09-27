@@ -339,8 +339,7 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
   } else if (sys_strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0) {
     debug(DEBUG_INFO, "WAYLAND", "binding zxdg decoration manager interface");
     window->decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
-    window->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(window->decoration_manager, window->xdg_toplevel);
-    zxdg_toplevel_decoration_v1_set_mode(window->decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    // the toplevel decoration is created later, after xdg_toplevel exists
 
   } else if (sys_strcmp(interface, "xdg_toplevel_icon_manager_v1") == 0) {
     debug(DEBUG_INFO, "WAYLAND", "binding xdg toplevel icon interface");
@@ -692,6 +691,10 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
       window->xdg_toplevel = xdg_surface_get_toplevel(window->xdg_surface);
       xdg_surface_add_listener(window->xdg_surface, &xdg_surface_listener, window);
       xdg_toplevel_add_listener(window->xdg_toplevel, &xdg_toplevel_listener, window);
+      if (window->decoration_manager) {
+        window->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(window->decoration_manager, window->xdg_toplevel);
+        zxdg_toplevel_decoration_v1_set_mode(window->decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+      }
 #ifdef LIBDECOR
     }
 #endif

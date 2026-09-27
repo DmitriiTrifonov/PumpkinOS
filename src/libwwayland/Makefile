@@ -16,6 +16,9 @@ EXTCLEAN=xdg-shell-client-protocol.h xdg-shell-protocol.c xdg-decoration-client-
 include ../common.mak
 include ../lib.mak
 
+# generated protocol headers must exist before any object is compiled (make -j)
+$(OBJS): $(EXTDEPS)
+
 WAYLAND_SCANNER=/usr/bin/wayland-scanner
 XDG_SHELL_PROTOCOL=/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
 XDG_DECORATION_PROTOCOL=/usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
