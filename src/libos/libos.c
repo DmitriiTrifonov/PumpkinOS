@@ -203,7 +203,6 @@ static int libos_action(void *arg) {
 
   if (data->wp) {
     encoding = data->hdepth == 16 ? ENC_RGB565 : ENC_RGBA;
-    height = data->dia ? ((data->height - BUTTONS_HEIGHT) * 2) / 3 : data->height;
     debug(DEBUG_INFO, PUMPKINOS, "creating %dx%d window, encoding %d", data->width, data->height, encoding);
 
     if ((data->w = data->wp->create(encoding, &data->width, &data->height, data->xfactor, data->yfactor, data->rotate,
@@ -212,6 +211,8 @@ static int libos_action(void *arg) {
       sys_free(data);
       return 0;
     }
+    // the window provider may have changed the size (fullscreen or size 0)
+    height = data->dia ? ((data->height - BUTTONS_HEIGHT) * 2) / 3 : data->height;
     pumpkin_set_window(data->w, data->width, height, data->height);
     if (data->wp->title) {
       data->wp->title(data->w, data->mode == 0 ? PUMPKINOS : data->launcher);
