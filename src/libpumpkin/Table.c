@@ -88,23 +88,23 @@ static void TblDrawTableRow(TableType *tableP, UInt16 row) {
     WinSetBackColor(fieldBack);
     WinSetTextColor(fieldText);
 
-    // cell background
+    // cell background: always erased, since the row may have moved or changed
+    // height (e.g. after the application reloads the table) and the old
+    // contents would remain under the new ones
     if (selected && currentRow == row) {
       switch (item->itemType) {
         case customTableItem:
-          break;
         case textTableItem:
         case narrowTextTableItem:
         case textWithNoteTableItem:
-          WinEraseRectangle(&rect, 0);
           break;
         default:
           WinSetBackColor(objSelFill);
           WinSetTextColor(objSelFore);
-          WinEraseRectangle(&rect, 0);
           break;
       }
     }
+    WinEraseRectangle(&rect, 0);
 
     // cell foreround
     switch (item->itemType) {
