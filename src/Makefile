@@ -6,12 +6,15 @@ BASE_MODULES=pilrc prcbuild libpit lua libpumpkin libos libshell BOOT Launcher P
 ifeq ($(OSNAME),GNU/Linux)
 
 ifneq ($(wildcard /usr/include/SDL2/SDL.h),)
-WINDOW_MODULE=liblsdl2
-else ifneq ($(wildcard /usr/include/wayland-client.h),)
-WINDOW_MODULE=libwwayland
-else ifneq ($(wildcard /usr/include/xcb/xcb_ewmh.h),)
-WINDOW_MODULE=libwxcb
-else
+WINDOW_MODULE+=liblsdl2
+endif
+ifneq ($(wildcard /usr/include/wayland-client.h),)
+WINDOW_MODULE+=libwwayland
+endif
+ifneq ($(wildcard /usr/include/xcb/xcb_ewmh.h),)
+WINDOW_MODULE+=libwxcb
+endif
+ifeq ($(WINDOW_MODULE),)
 ERROR=make_error
 ERROR_MSG=Could not find SDL2, Wayland or XCB development headers
 endif

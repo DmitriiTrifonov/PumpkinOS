@@ -33,7 +33,12 @@ else ifeq ($(MACHINE),aarch64)
 SYS_CPU=1
 SYS_ENDIAN=1
 ifeq ($(BITS),)
+# a 64-bit kernel may run a 32-bit userland (e.g. Raspberry Pi OS)
+ifeq ($(shell getconf LONG_BIT),64)
+BITS=64
+else
 BITS=32
+endif
 endif
 MBITS=
 else ifeq ($(MACHINE),x86_64)
@@ -92,7 +97,15 @@ ifeq ($(OSNAME),)
 OSNAME := $(shell uname -o)
 endif
 
+# busybox uname (Alpine, postmarketOS) reports "Linux" instead of "GNU/Linux"
+ifeq ($(OSNAME),Linux)
+OSNAME := GNU/Linux
+endif
+
 REAL_OSNAME := $(shell uname -o)
+ifeq ($(REAL_OSNAME),Linux)
+REAL_OSNAME := GNU/Linux
+endif
 
 ifeq ($(OSNAME),GNU/Linux)
 SYS_OS=1
