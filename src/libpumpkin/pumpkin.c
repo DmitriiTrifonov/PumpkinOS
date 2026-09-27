@@ -2463,6 +2463,14 @@ int pumpkin_launch(launch_request_t *request) {
         data->height = pumpkin_module.height;
       }
 
+      if (pumpkin_module.mode == 0) {
+        // the position may have been saved on a larger screen, keep the window inside the current one
+        if (data->x + data->width > pumpkin_module.width) data->x = pumpkin_module.width - data->width;
+        if (data->y + data->height > pumpkin_module.height) data->y = pumpkin_module.height - data->height;
+        if (data->x < 0) data->x = 0;
+        if (data->y < 0) data->y = 0;
+      }
+
       if ((regEnd = pumpkin_reg_get(creator, regEndianID, &regSize)) != NULL) {
         debug(DEBUG_INFO, PUMPKINOS, "using display %s endian from registry for %s", regEnd->littleEndian ? "little" : "big", request->name);
         data->littleEndian = regEnd->littleEndian;

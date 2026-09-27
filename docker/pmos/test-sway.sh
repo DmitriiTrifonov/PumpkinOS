@@ -9,7 +9,7 @@
 #   SCALE=1                output scale (sxmo usually sets 2 or more on phones)
 #   CLICKS="x,y ..."       left clicks after the first screenshot, in output
 #                          pixels; screenshot-after.png is taken after them
-#   PUMPKIN_WAYLAND_SCALE  passed to PumpkinOS (pumpkin_pmos.sh defaults to 2)
+#   PUMPKIN_WAYLAND_ZOOM  passed to PumpkinOS (pumpkin_pmos.sh defaults to 2)
 #   PLATFORM, ALPINE_VERSION  same as in build.sh
 
 set -e
@@ -24,7 +24,7 @@ IMAGE=pumpkinos-pmos-build:$ALPINE_VERSION-$(echo "$PLATFORM" | tr / -)
 docker run --rm --platform "$PLATFORM" --cap-add SYS_NICE \
   -e RESOLUTION="${RESOLUTION:-2160x1080}" -e SECONDS_TO_RUN="${SECONDS_TO_RUN:-15}" \
   -e LAUNCHER="${LAUNCHER:-pumpkin_pmos.sh}" -e SCALE="${SCALE:-1}" -e CLICKS="$CLICKS" \
-  ${PUMPKIN_WAYLAND_SCALE:+-e PUMPKIN_WAYLAND_SCALE=$PUMPKIN_WAYLAND_SCALE} \
+  ${PUMPKIN_WAYLAND_ZOOM:+-e PUMPKIN_WAYLAND_ZOOM=$PUMPKIN_WAYLAND_ZOOM} \
   -v "$ROOT":/src/PumpkinOS -v "$OUT":/out "$IMAGE" sh -c '
 apk add -q sway grim font-dejavu wlr-protocols >/dev/null 2>&1
 if [ -n "$CLICKS" ]; then

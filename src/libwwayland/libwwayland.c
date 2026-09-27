@@ -75,8 +75,10 @@ typedef struct {
   int32_t touch_id;
   int touch_active;
   int config_width, config_height;
-  int scale;
+  int scale, zoom, output_scale;
+  int buffer_width, buffer_height;
   uint32_t compositor_version;
+  struct wl_output *output;
   struct zxdg_decoration_manager_v1 *decoration_manager;
   struct zxdg_toplevel_decoration_v1 *decoration;
   struct xdg_toplevel_icon_manager_v1 *icon_manager;
@@ -150,13 +152,18 @@ static void pointer_set_position(libwwayland_window_t *window, wl_fixed_t surfac
   int x, y;
 
   // surface coordinates are logical, the buffer has scale pixels per unit
-  x = (int)(wl_fixed_to_double(surface_x) * window->scale);
-  y = (int)(wl_fixed_to_double(surface_y) * window->scale);
+  // and each PumpkinOS pixel is zoom x zoom buffer pixels
+  x = (int)(wl_fixed_to_double(surface_x) * window->scale) - window->margin;
+  y = (int)(wl_fixed_to_double(surface_y) * window->scale) - window->margin;
 
-  if (x >= window->margin && y >= window->margin && x < window->margin + window->width && y < window->margin + window->height) {
-    window->x = x - window->margin;
-    window->y = y - window->margin;
-    push_event(window, WINDOW_MOTION, window->x, window->y);
+  if (x >= 0 && y >= 0) {
+    x /= window->zoom;
+    y /= window->zoom;
+    if (x < window->width && y < window->height) {
+      window->x = x;
+      window->y = y;
+      push_event(window, WINDOW_MOTION, window->x, window->y);
+    }
   }
 }
 
@@ -229,6 +236,8 @@ static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_
 
   x = (int)(wl_fixed_to_double(surface_x) * window->scale) - window->margin;
   y = (int)(wl_fixed_to_double(surface_y) * window->scale) - window->margin;
+  x = x < 0 ? 0 : x / window->zoom;
+  y = y < 0 ? 0 : y / window->zoom;
   if (x < 0) x = 0;
   else if (x >= window->width) x = window->width - 1;
   if (y < 0) y = 0;
@@ -458,6 +467,20 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
   .ping = xdg_wm_base_handle_ping,
 };
 
+static void output_handle_scale(void *data, struct wl_output *wl_output, int32_t factor) {
+  libwwayland_window_t *window = (libwwayland_window_t *)data;
+
+  debug(DEBUG_INFO, "WAYLAND", "output scale %d", factor);
+  window->output_scale = factor;
+}
+
+static const struct wl_output_listener output_listener = {
+  .geometry = noop,
+  .mode = noop,
+  .done = noop,
+  .scale = output_handle_scale,
+};
+
 static void handle_global(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version) {
   libwwayland_window_t *window = (libwwayland_window_t *)data;
 
@@ -487,6 +510,12 @@ static void handle_global(void *data, struct wl_registry *registry, uint32_t nam
     debug(DEBUG_INFO, "WAYLAND", "binding zxdg decoration manager interface");
     window->decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
     // the toplevel decoration is created later, after xdg_toplevel exists
+
+  } else if (sys_strcmp(interface, wl_output_interface.name) == 0 && !window->output && version >= 2) {
+    // only the first output is used, for its scale
+    debug(DEBUG_INFO, "WAYLAND", "binding output interface");
+    window->output = wl_registry_bind(registry, name, &wl_output_interface, 2);
+    wl_output_add_listener(window->output, &output_listener, window);
 
   } else if (sys_strcmp(interface, "xdg_toplevel_icon_manager_v1") == 0) {
     debug(DEBUG_INFO, "WAYLAND", "binding xdg toplevel icon interface");
@@ -762,6 +791,8 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     window->running = 1;
     window->margin = 4;
     window->scale = 1;
+    window->zoom = 1;
+    window->output_scale = 1;
 
     registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registry_listener, window);
@@ -802,16 +833,6 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
 
     if (fullscreen) {
       window->margin = 0;
-    }
-
-    // PUMPKIN_WAYLAND_SCALE=n makes the PumpkinOS screen n times the logical
-    // size of the window, the compositor scales it down. Useful on phones,
-    // where the logical size is small because of a large output scale.
-    if (fullscreen && (s = sys_getenv("PUMPKIN_WAYLAND_SCALE")) != NULL && window->compositor_version >= 3) {
-      window->scale = sys_atoi(s);
-      if (window->scale < 1) window->scale = 1;
-      if (window->scale > 4) window->scale = 4;
-      debug(DEBUG_INFO, "WAYLAND", "buffer scale %d", window->scale);
     }
 
 #ifdef LIBDECOR
@@ -863,11 +884,28 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
       }
     }
 
+    // PUMPKIN_WAYLAND_ZOOM=n (fullscreen only): the buffer has the physical
+    // resolution of the output (buffer scale = output scale, so the compositor
+    // does not scale it) and each PumpkinOS pixel is drawn as n x n physical
+    // pixels. On a phone with a large output scale this gives a crisp picture
+    // with a PumpkinOS screen of a usable size.
+    if (fullscreen && (s = sys_getenv("PUMPKIN_WAYLAND_ZOOM")) != NULL) {
+      window->zoom = sys_atoi(s);
+      if (window->zoom < 1) window->zoom = 1;
+      if (window->zoom > 8) window->zoom = 8;
+      if (window->compositor_version >= 3) {
+        window->scale = window->output_scale;
+      }
+      debug(DEBUG_INFO, "WAYLAND", "buffer scale %d, zoom %d", window->scale, window->zoom);
+    }
+
     // in fullscreen, or when no size was given, use the size proposed by the compositor
     if (fullscreen || window->width <= 0 || window->height <= 0) {
       if (window->config_width > 2*window->margin && window->config_height > 2*window->margin) {
-        window->width = window->config_width * window->scale - 2*window->margin;
-        window->height = window->config_height * window->scale - 2*window->margin;
+        window->buffer_width = window->config_width * window->scale;
+        window->buffer_height = window->config_height * window->scale;
+        window->width = (window->buffer_width - 2*window->margin) / window->zoom;
+        window->height = (window->buffer_height - 2*window->margin) / window->zoom;
       } else if (window->width <= 0 || window->height <= 0) {
         window->width = DEFAULT_WIDTH;
         window->height = DEFAULT_HEIGHT;
@@ -889,7 +927,12 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     }
 #endif
 
-    if ((window->buffer = create_buffer(window, window->width + 2*window->margin, window->height + 2*window->margin)) == NULL) {
+    if (window->buffer_width == 0 || window->buffer_height == 0) {
+      window->buffer_width = window->width * window->zoom + 2*window->margin;
+      window->buffer_height = window->height * window->zoom + 2*window->margin;
+    }
+
+    if ((window->buffer = create_buffer(window, window->buffer_width, window->buffer_height)) == NULL) {
       destroy_buffer(tmp);
       sys_free(window);
       return NULL;
@@ -902,7 +945,7 @@ static window_t *libwwayland_window_create(int encoding, int *width, int *height
     wl_surface_commit(window->surface);
     destroy_buffer(tmp);
 
-    xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, (window->width + 2*window->margin) / window->scale, (window->height + 2*window->margin) / window->scale);
+    xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, window->buffer_width / window->scale, window->buffer_height / window->scale);
     wl_surface_commit(window->surface);
   }
 
@@ -919,7 +962,7 @@ static int libwwayland_window_erase(window_t *_window, uint32_t bg) {
 
   if (_window) {
     window = (libwwayland_window_t *)_window;
-    sys_memset(window->buffer->shm_data, 0, window->width * window->height * window->spixel);
+    sys_memset(window->buffer->shm_data, 0, window->buffer_width * window->buffer_height * window->spixel);
 
     if (window->background) {
       window_provider.draw_texture(_window, window->background, 0, 0);
@@ -1005,7 +1048,8 @@ static int libwwayland_window_update_texture(window_t *_window, texture_t *textu
 static int libwwayland_window_draw_texture_rect(window_t *_window, texture_t *texture, int tx, int ty, int w, int h, int x, int y) {
   libwwayland_window_t *window = (libwwayland_window_t *)_window;
   uint8_t *s, *d;
-  int spitch, dpitch, len, i, r = -1;
+  uint32_t *s32, *d32;
+  int spitch, dpitch, len, i, j, k, r = -1;
 
   if (window && texture && w > 0 && h > 0 && tx >= 0 && ty >= 0 && tx+w <= texture->width && ty+h <= texture->height &&
       x < window->width && y < window->height && x+w > 0 && y+h > 0) {
@@ -1031,19 +1075,41 @@ static int libwwayland_window_draw_texture_rect(window_t *_window, texture_t *te
         h = window->height - y;
       }
 
-      x += window->margin;
-      y += window->margin;
+      // from now on, x, y, w and h are in buffer pixels
+      x = window->margin + x * window->zoom;
+      y = window->margin + y * window->zoom;
 
       s = &texture->buf[(ty * texture->width + tx) * window->spixel];
-      d = &window->buffer->shm_data[(y * (window->width + 2*window->margin) + x) * window->spixel];
+      d = &window->buffer->shm_data[(y * window->buffer_width + x) * window->spixel];
       spitch = texture->width * window->spixel;
-      dpitch = (window->width + 2*window->margin) * window->spixel;
-      len = w * window->spixel;
-      for (i = 0; i < h; i++) {
-        sys_memcpy(d, s, len);
-        s += spitch;
-        d += dpitch;
+      dpitch = window->buffer_width * window->spixel;
+      len = w * window->zoom * window->spixel;
+
+      if (window->zoom == 1) {
+        for (i = 0; i < h; i++) {
+          sys_memcpy(d, s, len);
+          s += spitch;
+          d += dpitch;
+        }
+      } else {
+        // spixel is always 4 (ENC_RGBA)
+        for (i = 0; i < h; i++) {
+          s32 = (uint32_t *)s;
+          d32 = (uint32_t *)d;
+          for (j = 0; j < w; j++) {
+            for (k = 0; k < window->zoom; k++) {
+              *d32++ = s32[j];
+            }
+          }
+          for (k = 1; k < window->zoom; k++) {
+            sys_memcpy(d + k * dpitch, d, len);
+          }
+          s += spitch;
+          d += dpitch * window->zoom;
+        }
       }
+      w *= window->zoom;
+      h *= window->zoom;
       wl_surface_attach(window->surface, window->buffer->buffer, 0, 0);
       if (window->compositor_version >= 4) {
         wl_surface_damage_buffer(window->surface, x, y, w, h);
