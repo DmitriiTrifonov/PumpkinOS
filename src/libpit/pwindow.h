@@ -83,6 +83,9 @@ typedef struct {
   int (*show_cursor)(window_t *window, int show);
   int (*shader)(window_t *_window, int i, char *vertex, int vlen, char *fragment, int flen, float (*getvar)(char *name, void *data), void *data);
   int (*drop_file)(window_t *_window, void (*callback)(char *filename, void *data), void *data);
+  // draws the texture scaled by num/den, with its top left corner at x,y,
+  // only inside the clip rectangle cx,cy,cw,ch (all in window coordinates)
+  int (*draw_texture_scaled)(window_t *_window, texture_t *texture, int x, int y, int num, int den, int cx, int cy, int cw, int ch);
   void *data;
 } window_provider_t;
 

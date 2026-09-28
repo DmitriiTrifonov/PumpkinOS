@@ -1198,6 +1198,63 @@ static int libwwayland_window_draw_texture_rect(window_t *_window, texture_t *te
   return r;
 }
 
+// Draws a texture scaled by num/den. Each buffer pixel takes the texel under it,
+// so the result is crisp when zoom * num / den is an integer (e.g. zoom 2, 150%).
+static int libwwayland_window_draw_texture_scaled(window_t *_window, texture_t *texture, int x, int y, int num, int den, int cx, int cy, int cw, int ch) {
+  libwwayland_window_t *window = (libwwayland_window_t *)_window;
+  uint32_t *s32, *d32;
+  int *cols, bx0, by0, bx1, by1, bx, by, u, v, n, r = -1;
+
+  if (!window || !texture || num <= 0 || den <= 0) return -1;
+
+  // clip to the scaled texture and to the window, in window coordinates
+  if (cx < x) { cw -= x - cx; cx = x; }
+  if (cy < y) { ch -= y - cy; cy = y; }
+  if (cx + cw > x + texture->width * num / den) cw = x + texture->width * num / den - cx;
+  if (cy + ch > y + texture->height * num / den) ch = y + texture->height * num / den - cy;
+  if (cx < 0) { cw += cx; cx = 0; }
+  if (cy < 0) { ch += cy; cy = 0; }
+  if (cx + cw > window->width) cw = window->width - cx;
+  if (cy + ch > window->height) ch = window->height - cy;
+  if (cw <= 0 || ch <= 0) return 0;
+
+  // buffer pixels (without the margin)
+  bx0 = cx * window->zoom;
+  by0 = cy * window->zoom;
+  bx1 = (cx + cw) * window->zoom;
+  by1 = (cy + ch) * window->zoom;
+  n = bx1 - bx0;
+
+  if ((cols = sys_malloc(n * sizeof(int))) != NULL) {
+    for (bx = bx0; bx < bx1; bx++) {
+      u = (bx - x * window->zoom) * den / (num * window->zoom);
+      cols[bx - bx0] = u < texture->width ? u : texture->width - 1;
+    }
+
+    for (by = by0; by < by1; by++) {
+      v = (by - y * window->zoom) * den / (num * window->zoom);
+      if (v >= texture->height) v = texture->height - 1;
+      s32 = (uint32_t *)&texture->buf[v * texture->width * window->spixel];
+      d32 = (uint32_t *)&window->buffer->shm_data[((window->margin + by) * window->buffer_width + window->margin + bx0) * window->spixel];
+      for (bx = 0; bx < n; bx++) {
+        d32[bx] = s32[cols[bx]];
+      }
+    }
+    sys_free(cols);
+
+    wl_surface_attach(window->surface, window->buffer->buffer, 0, 0);
+    if (window->compositor_version >= 4) {
+      wl_surface_damage_buffer(window->surface, window->margin + bx0, window->margin + by0, n, by1 - by0);
+    } else {
+      wl_surface_damage(window->surface, (window->margin + bx0) / window->scale, (window->margin + by0) / window->scale, n / window->scale + 2, (by1 - by0) / window->scale + 2);
+    }
+    wl_surface_commit(window->surface);
+    r = 0;
+  }
+
+  return r;
+}
+
 static int libwwayland_window_draw_texture(window_t *_window, texture_t *texture, int x, int y) {
   int r = -1;
 
@@ -1309,6 +1366,7 @@ int libwwayland_load(void) {
   window_provider.draw_texture_rect = libwwayland_window_draw_texture_rect;
   window_provider.update_texture_rect = libwwayland_window_update_texture_rect;
   window_provider.show_cursor = libwwayland_window_show_cursor;
+  window_provider.draw_texture_scaled = libwwayland_window_draw_texture_scaled;
 
   return 0;
 }

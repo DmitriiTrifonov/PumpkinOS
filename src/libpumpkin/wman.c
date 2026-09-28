@@ -18,10 +18,13 @@ typedef struct {
   int x, y, width, height;
 } rect_t;
 
+// r is the area on the screen; the texture is shown scaled by num/den,
+// so r.width and r.height are the texture size times num/den
 typedef struct {
   int id;
   texture_t *t;
   rect_t r;
+  int num, den;
 } wman_area_t;
 
 struct wman_t {
@@ -339,8 +342,13 @@ static void wman_draw(wman_t *wm, int i, int x, int y, int w, int h, int dstX, i
         break;
       default:
         if (i < wm->n) {
+          // x, y, w, h: rectangle relative to the area, in screen units
           debug(DEBUG_TRACE, "WMAN", "area i=%d x=%d y=%d w=%d h=%d dx=%d dy=%d", i, x, y, w, h, dstX, dstY);
-          wm->wp->draw_texture_rect(wm->w, wm->area[i].t, x, y, w, h, dstX, dstY);
+          if (wm->area[i].num != wm->area[i].den) {
+            wm->wp->draw_texture_scaled(wm->w, wm->area[i].t, dstX - x, dstY - y, wm->area[i].num, wm->area[i].den, dstX, dstY, w, h);
+          } else {
+            wm->wp->draw_texture_rect(wm->w, wm->area[i].t, x, y, w, h, dstX, dstY);
+          }
         }
         break;
     }
@@ -420,12 +428,25 @@ void wman_clear(wman_t *wm) {
 }
 
 int wman_add(wman_t *wm, int id, texture_t *t, int x, int y, int w, int h) {
+  return wman_add_scaled(wm, id, t, x, y, w, h, 1, 1);
+}
+
+// w, h: texture size, the area on the screen is w*num/den by h*num/den
+int wman_add_scaled(wman_t *wm, int id, texture_t *t, int x, int y, int w, int h, int num, int den) {
   int i, r = -1;
+
+  if (num <= 0 || den <= 0 || !wm || !wm->wp->draw_texture_scaled) {
+    num = den = 1;
+  }
 
   if (wm && w > 0 && h > 0 && wm->n < MAX_AREAS) {
     i = wm->n++;
     wm->area[i].id = id;
     wm->area[i].t = t;
+    wm->area[i].num = num;
+    wm->area[i].den = den;
+    w = w * num / den;
+    h = h * num / den;
     if (x == -1) x = i ? (wm->r.width - w) / 2 : wm->border;
     if (y == -1) y = i ? (wm->r.height - h) / 2 : wm->border;
     set_rect(&wm->area[i].r, x, y, w, h, "wman_add");
@@ -443,8 +464,8 @@ int wman_texture(wman_t *wm, int id, texture_t *t, int w, int h) {
     for (i = wm->n-1; i >= 0; i--) {
       if (wm->area[i].id == id) {
         wm->area[i].t = t;
-        wm->area[i].r.width = w;
-        wm->area[i].r.height = h;
+        wm->area[i].r.width = w * wm->area[i].num / wm->area[i].den;
+        wm->area[i].r.height = h * wm->area[i].num / wm->area[i].den;
         r = 0;
         break;
       }
@@ -476,6 +497,20 @@ static void update(wman_t *wm, int i0, int x0, int y0, rect_t *r, int i) {
   }
 }
 
+// converts a rectangle in texture coordinates to area coordinates (screen units)
+static void area_rect(wman_area_t *a, int *x, int *y, int *w, int *h) {
+  int x2, y2;
+
+  if (a->num != a->den) {
+    x2 = ((*x + *w) * a->num + a->den - 1) / a->den;
+    y2 = ((*y + *h) * a->num + a->den - 1) / a->den;
+    *x = *x * a->num / a->den;
+    *y = *y * a->num / a->den;
+    *w = x2 - *x;
+    *h = y2 - *y;
+  }
+}
+
 // x,y: task relative coordinates
 int wman_update(wman_t *wm, int id, int x, int y, int w, int h) {
   rect_t r;
@@ -484,11 +519,13 @@ int wman_update(wman_t *wm, int id, int x, int y, int w, int h) {
   if (wm && wm->n) {
     if (wm->area[wm->n-1].id == id) {
       i = wm->n-1;
+      area_rect(&wm->area[i], &x, &y, &w, &h);
       wman_draw(wm, i, x, y, w, h, wm->area[wm->n-1].r.x + x, wm->area[wm->n-1].r.y + y);
       res = 0;
     } else {
       for (i = 0; i < wm->n-1; i++) {
         if (wm->area[i].id == id) {
+          area_rect(&wm->area[i], &x, &y, &w, &h);
 //debug(1, "XXX", "wman_update %d: %d,%d,%d,%d", i, x, y, w, h);
           set_rect(&r, wm->area[i].r.x + x, wm->area[i].r.y + y, w, h, "wman_update");
           update(wm, i, wm->area[i].r.x, wm->area[i].r.y, &r, i+1);
@@ -678,8 +715,8 @@ int wman_clicked(wman_t *wm, int x, int y, int *tx, int *ty) {
 
         //*tx = wm->area[i].r.x - x;
         //*ty = wm->area[i].r.y - y;
-        *tx = x - wm->area[i].r.x;
-        *ty = y - wm->area[i].r.y;
+        *tx = (x - wm->area[i].r.x) * wm->area[i].den / wm->area[i].num;
+        *ty = (y - wm->area[i].r.y) * wm->area[i].den / wm->area[i].num;
 
         return wm->area[i].id;
       }
@@ -706,13 +743,50 @@ int wman_xy(wman_t *wm, int id, int *x, int *y) {
   return r;
 }
 
+// converts screen coordinates to texture coordinates of an area (they may be outside the texture)
+int wman_to_area(wman_t *wm, int id, int x, int y, int *ax, int *ay) {
+  int i, dx, dy;
+
+  if (wm && ax && ay) {
+    for (i = 0; i < wm->n; i++) {
+      if (wm->area[i].id == id) {
+        dx = x - wm->area[i].r.x;
+        dy = y - wm->area[i].r.y;
+        // round towards minus infinity, so that points left or above the area stay negative
+        *ax = dx >= 0 ? dx * wm->area[i].den / wm->area[i].num : -((-dx * wm->area[i].den + wm->area[i].num - 1) / wm->area[i].num);
+        *ay = dy >= 0 ? dy * wm->area[i].den / wm->area[i].num : -((-dy * wm->area[i].den + wm->area[i].num - 1) / wm->area[i].num);
+        return 0;
+      }
+    }
+  }
+
+  return -1;
+}
+
+// converts texture coordinates of an area to screen coordinates
+int wman_from_area(wman_t *wm, int id, int ax, int ay, int *x, int *y) {
+  int i;
+
+  if (wm && x && y) {
+    for (i = 0; i < wm->n; i++) {
+      if (wm->area[i].id == id) {
+        *x = wm->area[i].r.x + ax * wm->area[i].num / wm->area[i].den;
+        *y = wm->area[i].r.y + ay * wm->area[i].num / wm->area[i].den;
+        return 0;
+      }
+    }
+  }
+
+  return -1;
+}
+
 int wman_draw_all(wman_t *wm) {
   int i, r = -1;
 
   if (wm) {
     for (i = 0; i < wm->n; i++) {
       draw_border(wm, i, i == wm->n-1);
-      wm->wp->draw_texture_rect(wm->w, wm->area[i].t, 0, 0, wm->area[i].r.width, wm->area[i].r.height, wm->area[i].r.x, wm->area[i].r.y);
+      wman_draw(wm, i, 0, 0, wm->area[i].r.width, wm->area[i].r.height, wm->area[i].r.x, wm->area[i].r.y);
     }
     r = 0;
   }

@@ -38,6 +38,7 @@ pumpkin.start {
   height     = 768,
   fullscreen = true,
   center     = true, -- windows open centered, ignoring the saved position
+  appscale   = 150,  -- application windows 1.5x larger (3 screen pixels per point with zoom 2)
   depth      = 16,
   hdepth     = lib.hdepth
 }

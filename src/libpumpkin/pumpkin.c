@@ -245,6 +245,7 @@ typedef struct {
   int density, depth, hdepth, mono;
   int fullrefresh;
   int center;
+  int app_scale;
   int osversion;
   int locked;
   int dragging;
@@ -1206,6 +1207,35 @@ void pumpkin_set_fullrefresh(int fullrefresh) {
 // open application windows centered on the screen, ignoring the saved position
 void pumpkin_set_center(int center) {
   pumpkin_module.center = center;
+}
+
+// show application windows scaled by percent/100 (mode 0), when they fit on the screen
+void pumpkin_set_app_scale(int percent) {
+  pumpkin_module.app_scale = percent;
+}
+
+static int gcd(int a, int b) {
+  int t;
+
+  while (b) {
+    t = a % b;
+    a = b;
+    b = t;
+  }
+
+  return a;
+}
+
+static void task_scale(int width, int height, int *num, int *den) {
+  int s = pumpkin_module.app_scale, g;
+
+  *num = *den = 1;
+  if (pumpkin_module.mode == 0 && s > 0 && s != 100 &&
+      width * s / 100 <= pumpkin_module.width && height * s / 100 <= pumpkin_module.height) {
+    g = gcd(s, 100);
+    *num = s / g;
+    *den = 100 / g;
+  }
 }
 
 void pumpkin_set_taskbar(int enabled) {
@@ -2367,7 +2397,7 @@ int pumpkin_launch(launch_request_t *request) {
   UInt32 type, creator, regSize;
   launch_data_t *data;
   client_request_t creq;
-  int i, running, index, wait_ack, r = -1;
+  int i, running, index, wait_ack, num, den, dw, dh, r = -1;
 
   running = -1;
   index = -1;
@@ -2471,16 +2501,21 @@ int pumpkin_launch(launch_request_t *request) {
         data->height = pumpkin_module.height;
       }
 
+      // size of the window on the screen
+      task_scale(data->width, data->height, &num, &den);
+      dw = data->width * num / den;
+      dh = data->height * num / den;
+
       if (pumpkin_module.mode == 0 && pumpkin_module.center) {
         // the size may come from the registry, so the center is computed again
-        data->x = (pumpkin_module.width - data->width) / 2;
-        data->y = (pumpkin_module.height - data->height) / 2;
+        data->x = (pumpkin_module.width - dw) / 2;
+        data->y = (pumpkin_module.height - dh) / 2;
       }
 
       if (pumpkin_module.mode == 0) {
         // the position may have been saved on a larger screen, keep the window inside the current one
-        if (data->x + data->width > pumpkin_module.width) data->x = pumpkin_module.width - data->width;
-        if (data->y + data->height > pumpkin_module.height) data->y = pumpkin_module.height - data->height;
+        if (data->x + dw > pumpkin_module.width) data->x = pumpkin_module.width - dw;
+        if (data->y + dh > pumpkin_module.height) data->y = pumpkin_module.height - dh;
         if (data->x < 0) data->x = 0;
         if (data->y < 0) data->y = 0;
       }
@@ -2511,7 +2546,7 @@ int pumpkin_launch(launch_request_t *request) {
       sys_memcpy(&data->request, request, sizeof(launch_request_t));
       data->texture = pumpkin_module.wp->create_texture(pumpkin_module.w, data->width, data->height);
       if (type == sysFileTApplication || type == sysFileTPanel) {
-        wman_add(pumpkin_module.wm, data->taskId, data->texture, data->x, data->y, data->width, data->height);
+        wman_add_scaled(pumpkin_module.wm, data->taskId, data->texture, data->x, data->y, data->width, data->height, num, den);
       }
       debug(DEBUG_INFO, PUMPKINOS, "starting \"%s\" with launchCode %d", request->name, request->code);
       r = thread_begin(TAG_APP, pumpkin_launch_action, data);
@@ -3513,36 +3548,31 @@ int pumpkin_sys_event(void) {
           }
 
           if (pumpkin_module.locked) {
-            if (wman_xy(pumpkin_module.wm, pumpkin_module.tasks[i].taskId, &tx, &ty) == 0) {
-              x -= tx;
-              y -= ty;
-              if (x < 0) x = 0; else if (x >= pumpkin_module.tasks[i].width) x = pumpkin_module.tasks[i].width - 1;
-              if (y < 0) y = 0; else if (y >= pumpkin_module.tasks[i].height) y = pumpkin_module.tasks[i].height - 1;
-              if (pumpkin_module.tasks[i].penX != x || pumpkin_module.tasks[i].penY != y) {
-                pumpkin_forward_msg(i, MSG_MOTION, x/mult, y/mult, 0);
+            // tx, ty: position in the task (the window may be scaled)
+            if (wman_to_area(pumpkin_module.wm, pumpkin_module.tasks[i].taskId, x, y, &tx, &ty) == 0) {
+              if (tx < 0) tx = 0; else if (tx >= pumpkin_module.tasks[i].width) tx = pumpkin_module.tasks[i].width - 1;
+              if (ty < 0) ty = 0; else if (ty >= pumpkin_module.tasks[i].height) ty = pumpkin_module.tasks[i].height - 1;
+              if (pumpkin_module.tasks[i].penX != tx || pumpkin_module.tasks[i].penY != ty) {
+                pumpkin_forward_msg(i, MSG_MOTION, tx/mult, ty/mult, 0);
               }
-              pumpkin_module.tasks[i].penX = x;
-              pumpkin_module.tasks[i].penY = y;
-              x += tx;
-              y += ty;
+              pumpkin_module.tasks[i].penX = tx;
+              pumpkin_module.tasks[i].penY = ty;
+              wman_from_area(pumpkin_module.wm, pumpkin_module.tasks[i].taskId, tx, ty, &x, &y);
             }
 
           } else if (!pumpkin_module.dia || !dia_stroke(pumpkin_module.dia, x, y)) {
-            if (wman_xy(pumpkin_module.wm, pumpkin_module.tasks[i].taskId, &tx, &ty) == 0) {
-              x -= tx;
-              y -= ty;
-              if (x >= 0 && x < pumpkin_module.tasks[i].width && y >= 0 && y < pumpkin_module.tasks[i].height) {
+            // tx, ty: position in the task (the window may be scaled)
+            if (wman_to_area(pumpkin_module.wm, pumpkin_module.tasks[i].taskId, x, y, &tx, &ty) == 0) {
+              if (tx >= 0 && tx < pumpkin_module.tasks[i].width && ty >= 0 && ty < pumpkin_module.tasks[i].height) {
                 // try not to flood the task with penMove events
-                if ((pumpkin_module.tasks[i].penX != x || pumpkin_module.tasks[i].penY != y) &&
+                if ((pumpkin_module.tasks[i].penX != tx || pumpkin_module.tasks[i].penY != ty) &&
                     (now - pumpkin_module.tasks[i].lastMotion) > 5000) {
-                  pumpkin_forward_msg(i, MSG_MOTION, x/mult, y/mult, 0);
+                  pumpkin_forward_msg(i, MSG_MOTION, tx/mult, ty/mult, 0);
                   pumpkin_module.tasks[i].lastMotion = now;
                 }
-                pumpkin_module.tasks[i].penX = x;
-                pumpkin_module.tasks[i].penY = y;
+                pumpkin_module.tasks[i].penX = tx;
+                pumpkin_module.tasks[i].penY = ty;
               }
-              x += tx;
-              y += ty;
             }
           }
         }
