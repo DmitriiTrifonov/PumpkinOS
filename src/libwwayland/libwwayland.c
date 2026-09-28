@@ -73,7 +73,7 @@ typedef struct {
   struct wl_keyboard *keyboard;
   struct wl_touch *touch;
   int32_t touch_id;
-  int touch_active, touch_pending, touch_drag;
+  int touch_active, touch_pending, touch_drag, touch_home;
   int64_t touch_time;
   int config_width, config_height;
   int scale, zoom, output_scale;
@@ -236,7 +236,8 @@ static const struct wl_pointer_listener pointer_listener = {
 // acts as the right button instead: the window under it becomes the current
 // one and follows the finger. To make this possible, the pen down of the first
 // finger is delayed by TOUCH_HOLD_US (a tap shorter than that is delivered as
-// pen down and up when the finger is lifted).
+// pen down and up when the finger is lifted). A third finger ends the drag and
+// sends the Home key, which closes the current application.
 #define TOUCH_HOLD_US 150000
 
 static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
@@ -270,6 +271,13 @@ static void touch_check_hold(libwwayland_window_t *window) {
 static void touch_release(libwwayland_window_t *window) {
   int button;
 
+  if (window->touch_home) {
+    // the gesture already delivered its events
+    window->touch_active = 0;
+    window->touch_home = 0;
+    return;
+  }
+
   if (window->touch_pending) {
     // a quick tap
     touch_press(window, 1);
@@ -297,6 +305,15 @@ static void touch_handle_down(void *data, struct wl_touch *wl_touch, uint32_t se
     debug(DEBUG_TRACE, "WAYLAND", "two finger touch, dragging");
     window->touch_drag = 1;
     touch_press(window, 2);
+  } else if (window->touch_drag) {
+    // third finger: stop dragging and close the current application
+    debug(DEBUG_TRACE, "WAYLAND", "three finger touch, home");
+    window->touch_drag = 0;
+    window->touch_home = 1;
+    window->buttons &= ~2;
+    push_event(window, WINDOW_BUTTONUP, 2, 0);
+    push_event(window, WINDOW_KEYDOWN, WINDOW_KEY_HOME, 0);
+    push_event(window, WINDOW_KEYUP, WINDOW_KEY_HOME, 0);
   }
 }
 
@@ -311,7 +328,7 @@ static void touch_handle_up(void *data, struct wl_touch *wl_touch, uint32_t seri
 static void touch_handle_motion(void *data, struct wl_touch *wl_touch, uint32_t time, int32_t id, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   libwwayland_window_t *window = (libwwayland_window_t *)data;
 
-  if (window->touch_active && id == window->touch_id) {
+  if (window->touch_active && id == window->touch_id && !window->touch_home) {
     touch_set_position(window, surface_x, surface_y);
     if (!window->touch_pending) {
       push_event(window, WINDOW_MOTION, window->x, window->y);
@@ -1090,8 +1107,24 @@ static int libwwayland_window_draw_texture_rect(window_t *_window, texture_t *te
   uint32_t *s32, *d32;
   int spitch, dpitch, len, i, j, k, r = -1;
 
-  if (window && texture && w > 0 && h > 0 && tx >= 0 && ty >= 0 && tx+w <= texture->width && ty+h <= texture->height &&
-      x < window->width && y < window->height && x+w > 0 && y+h > 0) {
+  if (window && texture && w > 0 && h > 0) {
+    // clip the source rectangle to the texture: the window manager may ask for a
+    // larger area, e.g. the background under the border of a window at the screen edge
+    if (tx < 0) {
+      x -= tx;
+      w += tx;
+      tx = 0;
+    }
+    if (ty < 0) {
+      y -= ty;
+      h += ty;
+      ty = 0;
+    }
+    if (tx + w > texture->width) w = texture->width - tx;
+    if (ty + h > texture->height) h = texture->height - ty;
+  }
+
+  if (window && texture && w > 0 && h > 0 && x < window->width && y < window->height && x+w > 0 && y+h > 0) {
 
     if (x < 0) {
       tx -= x;
