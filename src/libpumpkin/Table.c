@@ -380,20 +380,25 @@ Boolean TblHandleEvent(TableType *tableP, EventType *eventP) {
           row = TblScreenToRow(tableP, eventP->screenY);
           column = TblScreenToColumn(tableP, eventP->screenX);
 
+          debug(DEBUG_TRACE, "Table", "penDownEvent in table row=%d (usable=%d), col=%d (usable=%d)",
+            row, tableP->rowAttrs[row].usable, column, tableP->columnAttrs[column].usable);
+
+          // the previously selected item must be saved before currentRow and currentColumn
+          // are changed, otherwise its data would be saved into the new item
+          // (the application may have released and grabbed the focus again, which leaves the
+          // table editing but not selected, so both are checked)
+          if (tableP->rowAttrs[row].usable && tableP->columnAttrs[column].usable) {
+            if (TblGetSelection(tableP, &currentRow, &currentCol) || tableP->attr.editing) {
+              TblSaveData(tableP, currentRow, currentCol);
+            }
+          }
+
           // save the current row,column for use later on penUpEvent
           // I am not sure if this has side effects
           tableP->currentRow = row;
           tableP->currentColumn = column;
 
-          debug(DEBUG_TRACE, "Table", "penDownEvent in table row=%d (usable=%d), col=%d (usable=%d)",
-            row, column, tableP->rowAttrs[row].usable, tableP->columnAttrs[column].usable);
-
           if (tableP->rowAttrs[row].usable && tableP->columnAttrs[column].usable) {
-            if (TblGetSelection(tableP, &currentRow, &currentCol)) {
-//debug(1, "XXX", "penDownEvent saveData");
-              TblSaveData(tableP, currentRow, currentCol);
-            }
-
 //debug(1, "XXX", "TblHandleEvent penDownEvent selected=true");
             tableP->attr.selected = true;
             MemSet(&event, sizeof(EventType), 0);
@@ -1056,7 +1061,7 @@ void TblReleaseFocus(TableType *tableP) {
   Int16 currentRow, currentCol;
 
   if (tableP) {
-    if (TblGetSelection(tableP, &currentRow, &currentCol)) {
+    if (TblGetSelection(tableP, &currentRow, &currentCol) || tableP->attr.editing) {
 //debug(1, "XXX", "TblReleaseFocus TblSaveData %d %d,%d", tableP->id, currentCol, currentRow);
       TblSaveData(tableP, currentRow, currentCol);
     }
