@@ -335,7 +335,7 @@ static int StoInflateRec(storage_t *sto, storage_db_t *db, storage_handle_t *h) 
 }
 
 static int StoWriteIndex(storage_t *sto, storage_db_t *db) {
-  char buf[VFS_PATH];
+  char buf[VFS_PATH], *index;
   vfs_file_t *f;
   storage_handle_t *h;
   uint32_t i;
@@ -343,10 +343,21 @@ static int StoWriteIndex(storage_t *sto, storage_db_t *db) {
 
   storage_name(sto, db->name, STO_FILE_INDEX, 0, 0, 0, 0, buf);
   if ((f = StoVfsOpen(sto->session, buf, VFS_WRITE | VFS_TRUNC)) != NULL) {
-    for (i = 0; i < db->numRecs; i++) {
-      h = db->elements[i];
-      sys_snprintf(buf, sizeof(buf)-1, "%08X.%02X\n", h->d.rec.uniqueID, h->d.rec.attr & ATTR_MASK);
-      if (vfs_write(f, (uint8_t *)buf, 12) != 12) break;
+    // the index is rewritten each time a record is added, so it is written with a single
+    // call instead of one call per record (it was slow for databases with many records)
+    if (db->numRecs && (index = sys_malloc(db->numRecs * 12 + 1)) != NULL) {
+      for (i = 0; i < db->numRecs; i++) {
+        h = db->elements[i];
+        sys_snprintf(&index[i * 12], 13, "%08X.%02X\n", h->d.rec.uniqueID, h->d.rec.attr & ATTR_MASK);
+      }
+      vfs_write(f, (uint8_t *)index, db->numRecs * 12);
+      sys_free(index);
+    } else {
+      for (i = 0; i < db->numRecs; i++) {
+        h = db->elements[i];
+        sys_snprintf(buf, sizeof(buf)-1, "%08X.%02X\n", h->d.rec.uniqueID, h->d.rec.attr & ATTR_MASK);
+        if (vfs_write(f, (uint8_t *)buf, 12) != 12) break;
+      }
     }
     r = 0;
     vfs_close(f);
