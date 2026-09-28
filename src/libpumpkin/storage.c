@@ -3387,6 +3387,16 @@ Err DmAttachRecord(DmOpenRef dbP, UInt16 *atP, MemHandle newH, MemHandle *oldHP)
 //debug(1, "XXX", "DmAttachRecord numRecs %d", db->numRecs);
           if (*atP > db->numRecs) *atP = db->numRecs;
           h = (storage_handle_t *)newH;
+          if (h->magic != STO_MAGIC) {
+            // MemChunkNew returns a pointer even for movable chunks, and some applications
+            // (e.g. AW Sudoku) attach the value returned by MemChunkNew as a record
+            if ((h = StoPtrRecoverHandle(newH)) == NULL) {
+              debug(DEBUG_ERROR, "STOR", "DmAttachRecord invalid handle %p", newH);
+              mutex_unlock(sto->mutex);
+              return dmErrInvalidParam;
+            }
+            debug(DEBUG_INFO, "STOR", "DmAttachRecord pointer %p recovered as handle %p", newH, h);
+          }
           h->owner = 0;
           if ((h->htype & ~STO_INFLATED) != STO_TYPE_REC) {
 //debug(1, "XXX", "DmAttachRecord fix type");
@@ -4596,6 +4606,11 @@ Err MemChunkFree(MemPtr chunkDataP) {
   Err err = memErrInvalidParam;
 
   debug(DEBUG_TRACE, "STOR", "MemChunkFree %p", chunkDataP);
+  if (chunkDataP && (uint8_t *)chunkDataP >= sto->base && (uint8_t *)chunkDataP < sto->end &&
+      ((storage_handle_t *)chunkDataP)->magic == STO_MAGIC) {
+    // a movable chunk, MemChunkNew returned a handle
+    return MemHandleFree(chunkDataP);
+  }
   if (chunkDataP) {
     if ((h = MemPtrRecoverHandle(chunkDataP)) != NULL) {
       debug(DEBUG_TRACE, "STOR", "MemChunkFree handle 0x%08X", (uint32_t)((uint8_t *)h - sto->base));
@@ -4713,10 +4728,21 @@ Err MemHeapFreeByOwnerID(UInt16 heapID, UInt16 ownerID) {
   return errNone;
 }
 
+// As in PalmOS, a nonmovable chunk is returned as a pointer and a movable chunk
+// as a handle (AW Sudoku calls MemHandleLock on a movable chunk).
+// Bejeweled 2 assumes the returned value is a MemPtr, it should be nonmovable.
 MemPtr MemChunkNew(UInt16 heapID, UInt32 size, UInt16 attr) {
-  // XXX is it MemHandleNew or MemPtrNew ?
-  // Bejeweled 2 assumes the returned value is a MemPtr ?
-  return MemPtrNew(size);
+  MemHandle h;
+
+  if (attr & memNewChunkFlagNonMovable) {
+    return MemPtrNew(size);
+  }
+
+  if ((h = MemHandleNew(size)) != NULL && (attr & memNewChunkFlagPreLock)) {
+    MemHandleLock(h);
+  }
+
+  return h;
 }
 
 // Recover the handle of a movable chunk, given a pointer to its data.
