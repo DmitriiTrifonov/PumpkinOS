@@ -1,7 +1,8 @@
 // Test helper: clicks at absolute output coordinates using the
 // wlr-virtual-pointer protocol, keeping one virtual device for the whole
 // sequence (wlrctl creates a new device per command, which loses the position).
-// Usage: vclick <output width> <output height> x,y [x,y ...]
+// Usage: vclick <output width> <output height> x,y|Rx1,y1:x2,y2 [...]
+// x,y clicks the left button, Rx1,y1:x2,y2 drags with the right button.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +35,7 @@ int main(int argc, char *argv[]) {
   struct wl_display *display;
   struct zwlr_virtual_pointer_v1 *pointer;
   uint32_t width, height, t = 0;
-  int i, x, y;
+  int i, j, x, y, x2, y2;
 
   if (argc < 4) {
     fprintf(stderr, "usage: %s <output width> <output height> x,y [x,y ...]\n", argv[0]);
@@ -58,6 +59,30 @@ int main(int argc, char *argv[]) {
   wl_display_roundtrip(display);
 
   for (i = 3; i < argc; i++) {
+    if (sscanf(argv[i], "R%d,%d:%d,%d", &x, &y, &x2, &y2) == 4) {
+      zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x + 1, y, width, height);
+      zwlr_virtual_pointer_v1_frame(pointer);
+      wl_display_roundtrip(display);
+      zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x, y, width, height);
+      zwlr_virtual_pointer_v1_frame(pointer);
+      wl_display_roundtrip(display);
+      usleep(200000);
+      zwlr_virtual_pointer_v1_button(pointer, t++, BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+      zwlr_virtual_pointer_v1_frame(pointer);
+      wl_display_roundtrip(display);
+      for (j = 1; j <= 10; j++) {
+        usleep(50000);
+        zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x + (x2 - x) * j / 10, y + (y2 - y) * j / 10, width, height);
+        zwlr_virtual_pointer_v1_frame(pointer);
+        wl_display_roundtrip(display);
+      }
+      zwlr_virtual_pointer_v1_button(pointer, t++, BTN_RIGHT, WL_POINTER_BUTTON_STATE_RELEASED);
+      zwlr_virtual_pointer_v1_frame(pointer);
+      wl_display_roundtrip(display);
+      fprintf(stderr, "dragged %d,%d to %d,%d\n", x, y, x2, y2);
+      usleep(1500000);
+      continue;
+    }
     if (sscanf(argv[i], "%d,%d", &x, &y) != 2) continue;
     // two moves, so the client gets a motion event besides the enter event
     zwlr_virtual_pointer_v1_motion_absolute(pointer, t++, x + 1, y, width, height);
