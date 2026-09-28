@@ -246,6 +246,7 @@ typedef struct {
   int fullrefresh;
   int center;
   int app_scale;
+  char full_launcher[dmDBNameLength];
   int osversion;
   int locked;
   int dragging;
@@ -1212,6 +1213,12 @@ void pumpkin_set_center(int center) {
 // show application windows scaled by percent/100 (mode 0), when they fit on the screen
 void pumpkin_set_app_scale(int percent) {
   pumpkin_module.app_scale = percent;
+}
+
+// the application with this name (the Launcher) fills the screen in mode 0, it is also scaled by app_scale
+void pumpkin_set_full_launcher(char *name) {
+  sys_memset(pumpkin_module.full_launcher, 0, dmDBNameLength);
+  if (name) sys_strncpy(pumpkin_module.full_launcher, name, dmDBNameLength-1);
 }
 
 static int gcd(int a, int b) {
@@ -2499,6 +2506,17 @@ int pumpkin_launch(launch_request_t *request) {
       if (data->width == 0 || data->height == 0) {
         data->width = pumpkin_module.width;
         data->height = pumpkin_module.height;
+      }
+
+      if (pumpkin_module.mode == 0 && pumpkin_module.full_launcher[0] && !sys_strcmp(request->name, pumpkin_module.full_launcher)) {
+        // the Launcher adapts its layout to the window size; the texture is smaller when it is shown scaled
+        data->width = pumpkin_module.width;
+        data->height = pumpkin_module.height;
+        if (pumpkin_module.app_scale > 100) {
+          data->width = data->width * 100 / pumpkin_module.app_scale;
+          data->height = data->height * 100 / pumpkin_module.app_scale;
+        }
+        debug(DEBUG_INFO, PUMPKINOS, "launcher fills the screen, size %dx%d", data->width, data->height);
       }
 
       // size of the window on the screen

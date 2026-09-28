@@ -21,7 +21,7 @@ typedef struct {
   int pe;
   script_ref_t obj;
   int width, height, density, hdepth, depth, abgr, mono, xfactor, yfactor, rotate;
-  int software, fullscreen, fullrefresh, center, appscale, dia, taskbar, mode, osversion;
+  int software, fullscreen, fullrefresh, center, appscale, fulllauncher, dia, taskbar, mode, osversion;
   char launcher[MAX_STR];
   char driver[MAX_STR];
   window_provider_t *wp;
@@ -245,6 +245,7 @@ static int libos_action(void *arg) {
   }
 
   choose_launcher(data);
+  pumpkin_set_full_launcher(data->fulllauncher ? data->launcher : NULL);
 
   if (data->mode == 1) {
     debug(DEBUG_INFO, PUMPKINOS, "starting \"%s\"", data->launcher);
@@ -265,7 +266,7 @@ static int libos_action(void *arg) {
 typedef enum {
   PARAM_WIDTH = 1, PARAM_HEIGHT, PARAM_DENSITY, PARAM_HDEPTH, PARAM_DEPTH, PARAM_ABGR, PARAM_XFACTOR, PARAM_YFACTOR, PARAM_ROTATE,
   PARAM_FULLSCREEN, PARAM_DIA, PARAM_TASKBAR, PARAM_MODE, PARAM_SOFTWARE, PARAM_FULLREFRESH,
-  PARAM_DRIVER, PARAM_LAUNCHER, PARAM_OSVERSION, PARAM_DEVICEID, PARAM_COMPANYID, PARAM_LOGTRAP, PARAM_IMMEDIATE, PARAM_OPENGL, PARAM_CENTER, PARAM_APPSCALE
+  PARAM_DRIVER, PARAM_LAUNCHER, PARAM_OSVERSION, PARAM_DEVICEID, PARAM_COMPANYID, PARAM_LOGTRAP, PARAM_IMMEDIATE, PARAM_OPENGL, PARAM_CENTER, PARAM_APPSCALE, PARAM_FULLLAUNCHER
 } param_id_t;
 
 typedef struct {
@@ -300,6 +301,7 @@ static param_t params[] = {
   { PARAM_OPENGL,       SCRIPT_ARG_BOOLEAN, "opengl"       },
   { PARAM_CENTER,       SCRIPT_ARG_BOOLEAN, "center"       },
   { PARAM_APPSCALE,     SCRIPT_ARG_INTEGER, "appscale"     },
+  { PARAM_FULLLAUNCHER, SCRIPT_ARG_BOOLEAN, "fulllauncher" },
   { 0, 0, NULL }
 };
 
@@ -360,6 +362,7 @@ static int libos_start(int pe) {
             case PARAM_FULLREFRESH:  data->fullrefresh   = v.value.i; break;
             case PARAM_CENTER:       data->center        = v.value.i; break;
             case PARAM_APPSCALE:     data->appscale      = v.value.i; break;
+            case PARAM_FULLLAUNCHER: data->fulllauncher  = v.value.i; break;
             case PARAM_OSVERSION:    data->osversion     = v.value.i; break;
             case PARAM_DRIVER:
               sys_memset(data->driver, 0, MAX_STR);
