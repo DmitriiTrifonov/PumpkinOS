@@ -272,6 +272,7 @@ void pumpkin_set_mono(int mono);
 int pumpkin_get_encoding(void);
 int pumpkin_get_current(void);
 void pumpkin_set_fullrefresh(int fullrefresh);
+void pumpkin_set_center(int center);
 void pumpkin_set_taskbar(int enabled);
 
 void pumpkin_set_obj(int pe, script_ref_t obj);

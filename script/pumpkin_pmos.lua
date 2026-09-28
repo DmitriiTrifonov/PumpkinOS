@@ -37,6 +37,7 @@ pumpkin.start {
   width      = 1024, -- fallback, replaced by the compositor size
   height     = 768,
   fullscreen = true,
+  center     = true, -- windows open centered, ignoring the saved position
   depth      = 16,
   hdepth     = lib.hdepth
 }

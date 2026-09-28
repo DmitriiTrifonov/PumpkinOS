@@ -244,6 +244,7 @@ typedef struct {
   int width, height, full_height;
   int density, depth, hdepth, mono;
   int fullrefresh;
+  int center;
   int osversion;
   int locked;
   int dragging;
@@ -1200,6 +1201,11 @@ void pumpkin_set_mono(int mono) {
 
 void pumpkin_set_fullrefresh(int fullrefresh) {
   pumpkin_module.fullrefresh = fullrefresh;
+}
+
+// open application windows centered on the screen, ignoring the saved position
+void pumpkin_set_center(int center) {
+  pumpkin_module.center = center;
 }
 
 void pumpkin_set_taskbar(int enabled) {
@@ -2444,9 +2450,11 @@ int pumpkin_launch(launch_request_t *request) {
         }
 
         if ((regPos = pumpkin_reg_get(creator, regPositionID, &regSize)) != NULL) {
-          data->x = regPos->x;
-          data->y = regPos->y;
-          debug(DEBUG_INFO, PUMPKINOS, "using position %d,%d from registry for %s", data->x, data->y, request->name);
+          if (!pumpkin_module.center) {
+            data->x = regPos->x;
+            data->y = regPos->y;
+            debug(DEBUG_INFO, PUMPKINOS, "using position %d,%d from registry for %s", data->x, data->y, request->name);
+          }
           MemPtrFree(regPos);
         }
 
@@ -2461,6 +2469,12 @@ int pumpkin_launch(launch_request_t *request) {
       if (data->width == 0 || data->height == 0) {
         data->width = pumpkin_module.width;
         data->height = pumpkin_module.height;
+      }
+
+      if (pumpkin_module.mode == 0 && pumpkin_module.center) {
+        // the size may come from the registry, so the center is computed again
+        data->x = (pumpkin_module.width - data->width) / 2;
+        data->y = (pumpkin_module.height - data->height) / 2;
       }
 
       if (pumpkin_module.mode == 0) {

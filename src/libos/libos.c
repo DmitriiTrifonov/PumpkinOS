@@ -21,7 +21,7 @@ typedef struct {
   int pe;
   script_ref_t obj;
   int width, height, density, hdepth, depth, abgr, mono, xfactor, yfactor, rotate;
-  int software, fullscreen, fullrefresh, dia, taskbar, mode, osversion;
+  int software, fullscreen, fullrefresh, center, dia, taskbar, mode, osversion;
   char launcher[MAX_STR];
   char driver[MAX_STR];
   window_provider_t *wp;
@@ -236,6 +236,7 @@ static int libos_action(void *arg) {
   pumpkin_set_mode(data->mode, data->dia, data->hdepth);
   pumpkin_set_spawner(thread_get_handle());
   pumpkin_set_fullrefresh(data->fullrefresh);
+  pumpkin_set_center(data->center);
   pumpkin_set_obj(data->pe, data->obj);
 
   if (data->mode == 0) {
@@ -263,7 +264,7 @@ static int libos_action(void *arg) {
 typedef enum {
   PARAM_WIDTH = 1, PARAM_HEIGHT, PARAM_DENSITY, PARAM_HDEPTH, PARAM_DEPTH, PARAM_ABGR, PARAM_XFACTOR, PARAM_YFACTOR, PARAM_ROTATE,
   PARAM_FULLSCREEN, PARAM_DIA, PARAM_TASKBAR, PARAM_MODE, PARAM_SOFTWARE, PARAM_FULLREFRESH,
-  PARAM_DRIVER, PARAM_LAUNCHER, PARAM_OSVERSION, PARAM_DEVICEID, PARAM_COMPANYID, PARAM_LOGTRAP, PARAM_IMMEDIATE, PARAM_OPENGL
+  PARAM_DRIVER, PARAM_LAUNCHER, PARAM_OSVERSION, PARAM_DEVICEID, PARAM_COMPANYID, PARAM_LOGTRAP, PARAM_IMMEDIATE, PARAM_OPENGL, PARAM_CENTER
 } param_id_t;
 
 typedef struct {
@@ -296,6 +297,7 @@ static param_t params[] = {
   { PARAM_LOGTRAP,      SCRIPT_ARG_LSTRING, "logtrap"      },
   { PARAM_IMMEDIATE,    SCRIPT_ARG_BOOLEAN, "immediate"    },
   { PARAM_OPENGL,       SCRIPT_ARG_BOOLEAN, "opengl"       },
+  { PARAM_CENTER,       SCRIPT_ARG_BOOLEAN, "center"       },
   { 0, 0, NULL }
 };
 
@@ -354,6 +356,7 @@ static int libos_start(int pe) {
             case PARAM_MODE:         data->mode          = v.value.i; break;
             case PARAM_SOFTWARE:     data->software      = v.value.i; break;
             case PARAM_FULLREFRESH:  data->fullrefresh   = v.value.i; break;
+            case PARAM_CENTER:       data->center        = v.value.i; break;
             case PARAM_OSVERSION:    data->osversion     = v.value.i; break;
             case PARAM_DRIVER:
               sys_memset(data->driver, 0, MAX_STR);
