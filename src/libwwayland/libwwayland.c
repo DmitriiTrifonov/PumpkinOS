@@ -73,7 +73,8 @@ typedef struct {
   struct wl_keyboard *keyboard;
   struct wl_touch *touch;
   int32_t touch_id;
-  int touch_active;
+  int touch_active, touch_pending, touch_drag;
+  int64_t touch_time;
   int config_width, config_height;
   int scale, zoom, output_scale;
   int buffer_width, buffer_height;
@@ -230,7 +231,14 @@ static const struct wl_pointer_listener pointer_listener = {
   .axis = noop,
 };
 
-// only the first finger is tracked, it acts as the pen (left button)
+// Touch: the first finger acts as the pen (left button). If a second finger
+// touches the screen within TOUCH_HOLD_US of the first one, the first finger
+// acts as the right button instead: the window under it becomes the current
+// one and follows the finger. To make this possible, the pen down of the first
+// finger is delayed by TOUCH_HOLD_US (a tap shorter than that is delivered as
+// pen down and up when the finger is lifted).
+#define TOUCH_HOLD_US 150000
+
 static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   int x, y;
 
@@ -238,31 +246,57 @@ static void touch_set_position(libwwayland_window_t *window, wl_fixed_t surface_
   y = (int)(wl_fixed_to_double(surface_y) * window->scale) - window->margin;
   x = x < 0 ? 0 : x / window->zoom;
   y = y < 0 ? 0 : y / window->zoom;
-  if (x < 0) x = 0;
-  else if (x >= window->width) x = window->width - 1;
-  if (y < 0) y = 0;
-  else if (y >= window->height) y = window->height - 1;
+  if (x >= window->width) x = window->width - 1;
+  if (y >= window->height) y = window->height - 1;
   window->x = x;
   window->y = y;
-  push_event(window, WINDOW_MOTION, x, y);
+}
+
+// delivers the delayed pen down of the first finger
+static void touch_press(libwwayland_window_t *window, int button) {
+  window->touch_pending = 0;
+  // the press is handled at the last reported position, so motion goes first
+  push_event(window, WINDOW_MOTION, window->x, window->y);
+  window->buttons |= button;
+  push_event(window, WINDOW_BUTTONDOWN, button, 0);
+}
+
+static void touch_check_hold(libwwayland_window_t *window) {
+  if (window->touch_pending && sys_get_clock() - window->touch_time >= TOUCH_HOLD_US) {
+    touch_press(window, 1);
+  }
 }
 
 static void touch_release(libwwayland_window_t *window) {
+  int button;
+
+  if (window->touch_pending) {
+    // a quick tap
+    touch_press(window, 1);
+  }
+  button = window->touch_drag ? 2 : 1;
   window->touch_active = 0;
-  window->buttons &= ~1;
-  push_event(window, WINDOW_BUTTONUP, 1, 0);
+  window->touch_drag = 0;
+  window->buttons &= ~button;
+  push_event(window, WINDOW_BUTTONUP, button, 0);
 }
 
 static void touch_handle_down(void *data, struct wl_touch *wl_touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t surface_x, wl_fixed_t surface_y) {
   libwwayland_window_t *window = (libwwayland_window_t *)data;
 
-  if (surface == window->surface && !window->touch_active) {
+  if (surface != window->surface) return;
+
+  if (!window->touch_active) {
     window->touch_active = 1;
     window->touch_id = id;
-    // the press is handled at the last reported position, so motion goes first
+    window->touch_pending = 1;
+    window->touch_time = sys_get_clock();
     touch_set_position(window, surface_x, surface_y);
-    window->buttons |= 1;
-    push_event(window, WINDOW_BUTTONDOWN, 1, 0);
+  } else if (window->touch_pending) {
+    // second finger while the first one is held: move the window under the first one
+    debug(DEBUG_TRACE, "WAYLAND", "two finger touch, dragging");
+    window->touch_drag = 1;
+    touch_press(window, 2);
   }
 }
 
@@ -279,6 +313,9 @@ static void touch_handle_motion(void *data, struct wl_touch *wl_touch, uint32_t 
 
   if (window->touch_active && id == window->touch_id) {
     touch_set_position(window, surface_x, surface_y);
+    if (!window->touch_pending) {
+      push_event(window, WINDOW_MOTION, window->x, window->y);
+    }
   }
 }
 
@@ -722,6 +759,7 @@ static int libwwayland_event2(libwwayland_window_t *window, int wait, int *arg1,
   if (thread_must_end()) return -1;
 
   // events queued by a previous dispatch are delivered first
+  touch_check_hold(window);
   if ((r = pop_event(window, arg1, arg2)) != 0) return r;
 
   wl_display_flush(window->display);
@@ -739,6 +777,7 @@ static int libwwayland_event2(libwwayland_window_t *window, int wait, int *arg1,
     return -1;
   }
 
+  touch_check_hold(window);
   return pop_event(window, arg1, arg2);
 }
 
