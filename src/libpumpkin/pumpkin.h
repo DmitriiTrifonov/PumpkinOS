@@ -275,6 +275,7 @@ void pumpkin_set_fullrefresh(int fullrefresh);
 void pumpkin_set_center(int center);
 void pumpkin_set_app_scale(int percent);
 void pumpkin_set_full_launcher(char *name);
+void pumpkin_set_app_sound(int enabled);
 void pumpkin_set_taskbar(int enabled);
 
 void pumpkin_set_obj(int pe, script_ref_t obj);

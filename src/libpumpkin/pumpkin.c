@@ -247,6 +247,7 @@ typedef struct {
   int center;
   int app_scale;
   char full_launcher[dmDBNameLength];
+  int app_sound;
   int osversion;
   int locked;
   int dragging;
@@ -1219,6 +1220,11 @@ void pumpkin_set_app_scale(int percent) {
 void pumpkin_set_full_launcher(char *name) {
   sys_memset(pumpkin_module.full_launcher, 0, dmDBNameLength);
   if (name) sys_strncpy(pumpkin_module.full_launcher, name, dmDBNameLength-1);
+}
+
+// all applications may play sound, their registry setting is ignored (the global setting still applies)
+void pumpkin_set_app_sound(int enabled) {
+  pumpkin_module.app_sound = enabled;
 }
 
 static int gcd(int a, int b) {
@@ -6255,7 +6261,7 @@ int pumpkin_sound_enabled(void) {
 
   if (mutex_lock(mutex) == 0) {
     enabled = pumpkin_module.enableSound;
-    if (enabled) {
+    if (enabled && !pumpkin_module.app_sound) {
       enabled = task->enableSound;
     }
     mutex_unlock(mutex);
